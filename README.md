@@ -40,7 +40,7 @@ walls.
 
 ```yaml
 esp32:
-  board: m5stack-atoms3-lite
+  board: esp32-s3-devkitc-1
   variant: esp32s3
   framework:
     type: esp-idf
@@ -48,7 +48,7 @@ esp32:
 esp32_ble_tracker:
 
 ble_client:
-  - mac_address: XX:XX:XX:XX:XX:XX   # from the Powerpal sticker
+  - mac_address: XX:XX:XX:XX:XX:XX   # see "Finding the MAC" below
     id: powerpal
 
 time:
@@ -76,6 +76,20 @@ sensor:
       name: "Powerpal Battery"
 ```
 
+## Finding the MAC
+
+The MAC isn't printed on the Powerpal hardware. Three options:
+
+- **Android**: nRF Connect → scan → look for `powerpal NNNNNNNN`. MAC
+  is shown directly under the name (Android exposes real BLE MACs;
+  iOS/macOS replace them with per-app UUIDs that don't work here).
+- **The ESP32 itself**: flash this component with a placeholder MAC.
+  On boot, `esp32_ble_tracker:` logs every advertisement it sees,
+  including the Powerpal's MAC. Update the YAML and re-flash.
+- **Powerpal currently connected to the phone won't appear in scans**
+  (single-pair behaviour). Force-quit the Powerpal app first, wait
+  ~30 seconds, then scan.
+
 ## Pairing
 
 The Powerpal supports a single BLE pairing at a time. Unpair it from
@@ -88,6 +102,24 @@ After the ESP32 boots, look for the `[powerpal_ble]` log lines:
 `ESP_GATTC_WRITE_CHAR_EVT (Write confirmed)` → service reads and
 notification subscriptions. First measurement arrives within
 `notification_interval` minutes.
+
+## Diagnostic: log_api_key
+
+Optional `log_api_key: true` (default `false`) on the `powerpal_ble`
+sensor platform. When set, the component reads the Powerpal's
+cloud-API key from BLE characteristic `59DA0009-...` once after
+pairing succeeds and logs it at INFO level:
+
+```
+[I][powerpal_ble:NNN]: Powerpal API key (for cloud-API access): XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX
+```
+
+Useful if you want to query Powerpal's `readings.powerpal.net` API
+(e.g. to backfill historical data into Home Assistant) and your app
+version doesn't expose "Generate an API Key" under Guidance. Toggle
+on, OTA, capture from logs, toggle back off, OTA again. The key
+identifies your account to Powerpal's servers and is otherwise the
+same value on every read.
 
 ## License
 

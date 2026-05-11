@@ -30,6 +30,7 @@ CONF_PAIRING_CODE = "pairing_code"
 CONF_NOTIFICATION_INTERVAL = "notification_interval"
 CONF_PULSES_PER_KWH = "pulses_per_kwh"
 CONF_DAILY_ENERGY = "daily_energy"
+CONF_LOG_API_KEY = "log_api_key"
 
 
 def _validate(config):
@@ -67,6 +68,7 @@ CONFIG_SCHEMA = cv.All(
             cv.Required(CONF_PAIRING_CODE): cv.int_range(min=1, max=999999),
             cv.Required(CONF_NOTIFICATION_INTERVAL): cv.int_range(min=1, max=60),
             cv.Required(CONF_PULSES_PER_KWH): cv.float_range(min=1),
+            cv.Optional(CONF_LOG_API_KEY, default=False): cv.boolean,
             cv.Optional(CONF_BATTERY_LEVEL): sensor.sensor_schema(
                 unit_of_measurement=UNIT_PERCENT,
                 device_class=DEVICE_CLASS_BATTERY,
@@ -106,6 +108,8 @@ async def to_code(config):
 
     if CONF_PULSES_PER_KWH in config:
         cg.add(var.set_pulses_per_kwh(config[CONF_PULSES_PER_KWH]))
+
+    cg.add(var.set_log_api_key(config[CONF_LOG_API_KEY]))
 
     if CONF_BATTERY_LEVEL in config:
         sens = await sensor.new_sensor(config[CONF_BATTERY_LEVEL])

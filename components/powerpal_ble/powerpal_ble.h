@@ -59,12 +59,15 @@ class Powerpal : public esphome::ble_client::BLEClientNode, public Component {
     pairing_code_[3] = (pairing_code & 0xFF000000) >> 24;
   }
   void set_notification_interval(uint8_t reading_batch_size) { reading_batch_size_[0] = reading_batch_size; }
+  void set_log_api_key(bool log_api_key) { log_api_key_ = log_api_key; }
 
  protected:
   std::string pkt_to_hex_(const uint8_t *data, uint16_t len);
   void decode_(const uint8_t *data, uint16_t length);
   void parse_battery_(const uint8_t *data, uint16_t length);
   void parse_measurement_(const uint8_t *data, uint16_t length);
+  void parse_apikey_(const uint8_t *data, uint16_t length);
+  std::string serial_to_apikey_(const uint8_t *data, uint16_t length);
   void send_pairing_code_();
 
   // Set true once the pairing-code write has been issued (from either GAP AUTH_CMPL or
@@ -96,6 +99,11 @@ class Powerpal : public esphome::ble_client::BLEClientNode, public Component {
   uint16_t battery_char_handle_ = 0x10;
   uint16_t led_sensitivity_char_handle_ = 0x25;
   uint16_t firmware_char_handle_ = 0x3b;
+  // Char handle for the apikey/UUID characteristic (`59DA0009-...`). Read once
+  // post-pair and logged when log_api_key_ is true. Diagnostic-only.
+  uint16_t apikey_char_handle_ = 0x28;
+
+  bool log_api_key_{false};
 };
 
 }  // namespace powerpal_ble
