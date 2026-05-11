@@ -1,4 +1,4 @@
-# esphome-powerpal
+# powerpal-esphome
 
 ESPHome external component for the [Powerpal](https://www.powerpal.net/)
 BLE energy monitor. Reads power, energy and battery directly over BLE
@@ -24,7 +24,7 @@ Differences from the upstream fork:
   destination; round-tripping through Powerpal's cloud is not
   wanted.
 - Defensive fallback: the pairing-code write fires from
-  `ESP_GATTC_SEARCH_CMPL_EVT` *as well as* `ESP_GAP_BLE_AUTH_CMPL_EVT`,
+  `ESP_GATTC_SEARCH_CMPL_EVT` _as well as_ `ESP_GAP_BLE_AUTH_CMPL_EVT`,
   with a single-write gate. The Powerpal does not require BLE-level
   bonding, and `AUTH_CMPL` may not fire at all under current
   Bluedroid / IDF v5; relying on it alone causes the connection to
@@ -48,7 +48,7 @@ esp32:
 esp32_ble_tracker:
 
 ble_client:
-  - mac_address: XX:XX:XX:XX:XX:XX   # see "Finding the MAC" below
+  - mac_address: XX:XX:XX:XX:XX:XX # see "Finding the MAC" below
     id: powerpal
 
 time:
@@ -56,15 +56,15 @@ time:
     id: homeassistant_time
 
 external_components:
-  - source: github://pento/esphome-powerpal@main
+  - source: github://pento/powerpal-esphome@main
     components: [powerpal_ble]
 
 sensor:
   - platform: powerpal_ble
     ble_client_id: powerpal
-    pairing_code: 123456              # from the Powerpal app / info card
-    notification_interval: 1          # minutes between batches (1–60)
-    pulses_per_kwh: 1000              # confirm against Powerpal app setup
+    pairing_code: 123456 # from the Powerpal app / info card
+    notification_interval: 1 # minutes between batches (1–60)
+    pulses_per_kwh: 1000 # confirm against Powerpal app setup
     time_id: homeassistant_time
     power:
       name: "Powerpal Power"
@@ -110,7 +110,7 @@ sensor platform. When set, the component reads the Powerpal's
 cloud-API key from BLE characteristic `59DA0009-...` once after
 pairing succeeds and logs it at INFO level:
 
-```
+```text
 [I][powerpal_ble:NNN]: Powerpal API key (for cloud-API access): XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX
 ```
 
