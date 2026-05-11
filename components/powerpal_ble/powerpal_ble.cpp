@@ -1,0 +1,302 @@
+#include "powerpal_ble.h"
+#include "esphome/core/log.h"
+#include "esphome/core/hal.h"
+
+#ifdef USE_ESP32
+
+namespace esphome {
+namespace powerpal_ble {
+
+static const char *const TAG = "powerpal_ble";
+
+void Powerpal::dump_config() {
+  ESP_LOGCONFIG(TAG, "POWERPAL");
+  LOG_SENSOR(" ", "Battery", this->battery_);
+  LOG_SENSOR(" ", "Power", this->power_sensor_);
+  LOG_SENSOR(" ", "Daily Energy", this->daily_energy_sensor_);
+  LOG_SENSOR(" ", "Total Energy", this->energy_sensor_);
+}
+
+void Powerpal::setup() {
+  this->pairing_code_written_ = false;
+  this->authenticated_ = false;
+  this->pulse_multiplier_ = ((seconds_in_minute * this->reading_batch_size_[0]) / (this->pulses_per_kwh_ / kw_to_w_conversion));
+  ESP_LOGD(TAG, "pulse_multiplier_: %f", this->pulse_multiplier_);
+}
+
+std::string Powerpal::pkt_to_hex_(const uint8_t *data, uint16_t len) {
+  char buf[64];
+  memset(buf, 0, 64);
+  for (int i = 0; i < len; i++)
+    sprintf(&buf[i * 2], "%02x", data[i]);
+  std::string ret = buf;
+  return ret;
+}
+
+void Powerpal::decode_(const uint8_t *data, uint16_t length) {
+  ESP_LOGD(TAG, "DEC(%d): 0x%s", length, this->pkt_to_hex_(data, length).c_str());
+}
+
+void Powerpal::parse_battery_(const uint8_t *data, uint16_t length) {
+  ESP_LOGD(TAG, "Battery: DEC(%d): 0x%s", length, this->pkt_to_hex_(data, length).c_str());
+  if (length == 1) {
+    this->battery_->publish_state(data[0]);
+  }
+}
+
+void Powerpal::parse_measurement_(const uint8_t *data, uint16_t length) {
+  ESP_LOGD(TAG, "Meaurement: DEC(%d): 0x%s", length, this->pkt_to_hex_(data, length).c_str());
+  if (length >= 6) {
+    time_t unix_time = data[0];
+    unix_time += (data[1] << 8);
+    unix_time += (data[2] << 16);
+    unix_time += (data[3] << 24);
+
+    uint16_t pulses_within_interval = data[4];
+    pulses_within_interval += data[5] << 8;
+
+    float avg_watts_within_interval = pulses_within_interval * this->pulse_multiplier_;
+
+    ESP_LOGI(TAG, "Timestamp: %ld, Pulses: %d, Average Watts within interval: %f W", unix_time, pulses_within_interval,
+             avg_watts_within_interval);
+
+    if (this->power_sensor_ != nullptr) {
+      this->power_sensor_->publish_state(avg_watts_within_interval);
+    }
+
+    if (this->energy_sensor_ != nullptr) {
+      this->total_pulses_ += pulses_within_interval;
+      float energy = this->total_pulses_ / this->pulses_per_kwh_;
+      this->energy_sensor_->publish_state(energy);
+    }
+
+    if (this->daily_energy_sensor_ != nullptr) {
+      this->daily_pulses_ += pulses_within_interval;
+      float energy = this->daily_pulses_ / this->pulses_per_kwh_;
+      this->daily_energy_sensor_->publish_state(energy);
+
+#ifdef USE_TIME
+      auto *time_ = *this->time_;
+      time::ESPTime date_of_measurement = time_->now();
+      if (date_of_measurement.is_valid()) {
+        if (this->day_of_last_measurement_ == 0) { this->day_of_last_measurement_ = date_of_measurement.day_of_year;}
+        else if (this->day_of_last_measurement_ != date_of_measurement.day_of_year) {
+          this->daily_pulses_ = 0;
+          this->day_of_last_measurement_ = date_of_measurement.day_of_year;
+        }
+      } else {
+#else
+        struct tm *date_of_measurement = ::localtime(&unix_time);
+        if (this->day_of_last_measurement_ == 0) { this->day_of_last_measurement_ = date_of_measurement->tm_yday + 1;}
+        else if (this->day_of_last_measurement_ != date_of_measurement->tm_yday + 1) {
+          this->daily_pulses_ = 0;
+          this->day_of_last_measurement_ = date_of_measurement->tm_yday + 1;
+        }
+#endif
+#ifdef USE_TIME
+      }
+#endif
+    }
+  }
+}
+
+void Powerpal::send_pairing_code_() {
+  if (this->pairing_code_written_) {
+    return;
+  }
+  this->pairing_code_written_ = true;
+  ESP_LOGI(TAG, "[%s] Writing pairing code to Powerpal", this->parent_->address_str().c_str());
+  auto status = esp_ble_gattc_write_char(this->parent()->gattc_if, this->parent()->conn_id,
+                                         this->pairing_code_char_handle_, sizeof(this->pairing_code_),
+                                         this->pairing_code_, ESP_GATT_WRITE_TYPE_RSP, ESP_GATT_AUTH_REQ_NONE);
+  if (status) {
+    ESP_LOGW(TAG, "Error sending write request for pairing_code, status=%d", status);
+    // Allow a retry on the next triggering event.
+    this->pairing_code_written_ = false;
+  }
+}
+
+void Powerpal::gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_if,
+                                   esp_ble_gattc_cb_param_t *param) {
+  switch (event) {
+    case ESP_GATTC_DISCONNECT_EVT: {
+      this->pairing_code_written_ = false;
+      this->authenticated_ = false;
+      break;
+    }
+    case ESP_GATTC_SEARCH_CMPL_EVT: {
+      // Defensive fallback: send the pairing code now that services are discovered,
+      // in case ESP_GAP_BLE_AUTH_CMPL_EVT never fires (the Powerpal does not require
+      // BLE-level bonding under current Bluedroid / IDF v5).
+      this->send_pairing_code_();
+      break;
+    }
+    case ESP_GATTC_READ_CHAR_EVT: {
+      ESP_LOGD(TAG, "[%s] ESP_GATTC_READ_CHAR_EVT (Received READ)", this->parent_->address_str().c_str());
+      if (param->read.status != ESP_GATT_OK) {
+        ESP_LOGW(TAG, "Error reading char at handle %d, status=%d", param->read.handle, param->read.status);
+        break;
+      }
+      // reading batch size
+      if (param->read.handle == this->reading_batch_size_char_handle_) {
+        ESP_LOGD(TAG, "Recieved reading_batch_size read event");
+        this->decode_(param->read.value, param->read.value_len);
+        if (param->read.value_len == 4) {
+          if (param->read.value[0] != this->reading_batch_size_[0]) {
+            // reading batch size needs changing, so write
+            auto status =
+                esp_ble_gattc_write_char(this->parent()->gattc_if, this->parent()->conn_id,
+                                         this->reading_batch_size_char_handle_, sizeof(this->reading_batch_size_),
+                                         this->reading_batch_size_, ESP_GATT_WRITE_TYPE_RSP, ESP_GATT_AUTH_REQ_NONE);
+            if (status) {
+              ESP_LOGW(TAG, "Error sending write request for batch_size, status=%d", status);
+            }
+          } else {
+            // reading batch size is set correctly so subscribe to measurement notifications
+            auto status = esp_ble_gattc_register_for_notify(this->parent_->gattc_if, this->parent_->remote_bda,
+                                                            this->measurement_char_handle_);
+            if (status) {
+              ESP_LOGW(TAG, "[%s] esp_ble_gattc_register_for_notify failed, status=%d",
+                       this->parent_->address_str().c_str(), status);
+            }
+          }
+        }
+        break;
+      }
+
+      // battery
+      if (param->read.handle == this->battery_char_handle_) {
+        ESP_LOGD(TAG, "Recieved battery read event");
+        this->parse_battery_(param->read.value, param->read.value_len);
+        break;
+      }
+
+      // firmware
+      if (param->read.handle == this->firmware_char_handle_) {
+        ESP_LOGD(TAG, "Recieved firmware read event");
+        this->decode_(param->read.value, param->read.value_len);
+        break;
+      }
+
+      // led sensitivity
+      if (param->read.handle == this->led_sensitivity_char_handle_) {
+        ESP_LOGD(TAG, "Recieved led sensitivity read event");
+        this->decode_(param->read.value, param->read.value_len);
+        break;
+      }
+
+      break;
+    }
+
+    case ESP_GATTC_WRITE_CHAR_EVT: {
+      ESP_LOGD(TAG, "[%s] ESP_GATTC_WRITE_CHAR_EVT (Write confirmed)", this->parent_->address_str().c_str());
+      if (param->write.status != ESP_GATT_OK) {
+        ESP_LOGW(TAG, "Error writing value to char at handle %d, status=%d", param->write.handle, param->write.status);
+        // Allow a retry of the pairing-code write on the next triggering event.
+        if (param->write.handle == this->pairing_code_char_handle_) {
+          this->pairing_code_written_ = false;
+        }
+        break;
+      }
+
+      if (param->write.handle == this->pairing_code_char_handle_ && !this->authenticated_) {
+        this->authenticated_ = true;
+
+        auto read_reading_batch_size_status =
+            esp_ble_gattc_read_char(this->parent()->gattc_if, this->parent()->conn_id,
+                                    this->reading_batch_size_char_handle_, ESP_GATT_AUTH_REQ_NONE);
+        if (read_reading_batch_size_status) {
+          ESP_LOGW(TAG, "Error sending read request for reading batch size, status=%d", read_reading_batch_size_status);
+        }
+
+        if (this->battery_ != nullptr) {
+          // read battery
+          auto read_battery_status = esp_ble_gattc_read_char(this->parent()->gattc_if, this->parent()->conn_id,
+                                                             this->battery_char_handle_, ESP_GATT_AUTH_REQ_NONE);
+          if (read_battery_status) {
+            ESP_LOGW(TAG, "Error sending read request for battery, status=%d", read_battery_status);
+          }
+          // Enable notifications for battery
+          auto notify_battery_status = esp_ble_gattc_register_for_notify(
+              this->parent_->gattc_if, this->parent_->remote_bda, this->battery_char_handle_);
+          if (notify_battery_status) {
+            ESP_LOGW(TAG, "[%s] esp_ble_gattc_register_for_notify failed, status=%d",
+                     this->parent_->address_str().c_str(), notify_battery_status);
+          }
+        }
+
+        // read firmware version
+        auto read_firmware_status =
+            esp_ble_gattc_read_char(this->parent()->gattc_if, this->parent()->conn_id,
+                                    this->firmware_char_handle_, ESP_GATT_AUTH_REQ_NONE);
+        if (read_firmware_status) {
+          ESP_LOGW(TAG, "Error sending read request for firmware, status=%d", read_firmware_status);
+        }
+
+        // read led sensitivity
+        auto read_led_sensitivity_status =
+            esp_ble_gattc_read_char(this->parent()->gattc_if, this->parent()->conn_id,
+                                    this->led_sensitivity_char_handle_, ESP_GATT_AUTH_REQ_NONE);
+        if (read_led_sensitivity_status) {
+          ESP_LOGW(TAG, "Error sending read request for led sensitivity, status=%d", read_led_sensitivity_status);
+        }
+
+        break;
+      }
+      if (param->write.handle == this->reading_batch_size_char_handle_) {
+        // reading batch size is now set correctly so subscribe to measurement notifications
+        auto status = esp_ble_gattc_register_for_notify(this->parent_->gattc_if, this->parent_->remote_bda,
+                                                        this->measurement_char_handle_);
+        if (status) {
+          ESP_LOGW(TAG, "[%s] esp_ble_gattc_register_for_notify failed, status=%d",
+                   this->parent_->address_str().c_str(), status);
+        }
+        break;
+      }
+
+      ESP_LOGW(TAG, "[%s] Missed all handle matches: %d",
+               this->parent_->address_str().c_str(), param->write.handle);
+      break;
+    }  // ESP_GATTC_WRITE_CHAR_EVT
+
+    case ESP_GATTC_NOTIFY_EVT: {
+      ESP_LOGD(TAG, "[%s] Received Notification", this->parent_->address_str().c_str());
+
+      // battery
+      if (param->notify.handle == this->battery_char_handle_) {
+        ESP_LOGD(TAG, "Recieved battery notify event");
+        this->parse_battery_(param->notify.value, param->notify.value_len);
+        break;
+      }
+
+      // measurement
+      if (param->notify.handle == this->measurement_char_handle_) {
+        ESP_LOGD(TAG, "Recieved measurement notify event");
+        this->parse_measurement_(param->notify.value, param->notify.value_len);
+        break;
+      }
+      break;
+    }
+    default:
+      break;
+  }
+}
+
+void Powerpal::gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param) {
+  switch (event) {
+    // This event is sent once authentication has completed
+    case ESP_GAP_BLE_AUTH_CMPL_EVT: {
+      if (param->ble_security.auth_cmpl.success) {
+        this->send_pairing_code_();
+      }
+      break;
+    }
+    default:
+      break;
+  }
+}
+
+}  // namespace powerpal_ble
+}  // namespace esphome
+
+#endif
