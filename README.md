@@ -76,6 +76,13 @@ sensor:
       name: "Battery"
 ```
 
+## Historical data
+
+Use [`scripts/import_history.py`](scripts/import_history.py) to seed
+Home Assistant's long-term statistics from Powerpal's cloud API. It
+pulls every hourly reading the cloud has for your device and writes
+the corresponding rows via `recorder/import_statistics`.
+
 ## Finding the MAC
 
 The MAC isn't printed on the Powerpal hardware. Three options:

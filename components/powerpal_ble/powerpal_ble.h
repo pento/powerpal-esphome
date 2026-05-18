@@ -23,15 +23,36 @@ namespace espbt = esphome::esp32_ble_tracker;
 
 static const espbt::ESPBTUUID POWERPAL_SERVICE_UUID =
     espbt::ESPBTUUID::from_raw("59DAABCD-12F4-25A6-7D4F-55961DCE4205");
+static const espbt::ESPBTUUID POWERPAL_CHARACTERISTIC_MEASUREMENT_UUID =
+    espbt::ESPBTUUID::from_raw("59DA0001-12F4-25A6-7D4F-55961DCE4205");
+// Write [start_ts, end_ts] as two little-endian uint32 (8 bytes total) to ask
+// the device to stream buffered measurements over the measurement characteristic.
+// Without this write, no measurement notifications are sent.
+static const espbt::ESPBTUUID POWERPAL_CHARACTERISTIC_MEASUREMENT_ACCESS_UUID =
+    espbt::ESPBTUUID::from_raw("59DA0002-12F4-25A6-7D4F-55961DCE4205");
+// Read/write the device's wall-clock (Unix epoch seconds, LE uint32, 4 bytes).
+// The Powerpal needs this set after power-loss or it returns zeros from first_rec
+// and tags new measurements with bogus timestamps.
+static const espbt::ESPBTUUID POWERPAL_CHARACTERISTIC_TIME_UUID =
+    espbt::ESPBTUUID::from_raw("59DA0004-12F4-25A6-7D4F-55961DCE4205");
+// Read returns 8 bytes: [first_buffered_ts, last_buffered_ts] as two LE uint32.
+// The Powerpal app calls this "firstRec" / "getFirstAndLastTimestamps".
+static const espbt::ESPBTUUID POWERPAL_CHARACTERISTIC_FIRST_REC_UUID =
+    espbt::ESPBTUUID::from_raw("59DA0005-12F4-25A6-7D4F-55961DCE4205");
+static const espbt::ESPBTUUID POWERPAL_CHARACTERISTIC_LED_SENSITIVITY_UUID =
+    espbt::ESPBTUUID::from_raw("59DA0008-12F4-25A6-7D4F-55961DCE4205");
+static const espbt::ESPBTUUID POWERPAL_CHARACTERISTIC_APIKEY_UUID =
+    espbt::ESPBTUUID::from_raw("59DA0009-12F4-25A6-7D4F-55961DCE4205");
 static const espbt::ESPBTUUID POWERPAL_CHARACTERISTIC_PAIRING_CODE_UUID =
     espbt::ESPBTUUID::from_raw("59DA0011-12F4-25A6-7D4F-55961DCE4205");
 static const espbt::ESPBTUUID POWERPAL_CHARACTERISTIC_READING_BATCH_SIZE_UUID =
     espbt::ESPBTUUID::from_raw("59DA0013-12F4-25A6-7D4F-55961DCE4205");
-static const espbt::ESPBTUUID POWERPAL_CHARACTERISTIC_MEASUREMENT_UUID =
-    espbt::ESPBTUUID::from_raw("59DA0001-12F4-25A6-7D4F-55961DCE4205");
 
 static const espbt::ESPBTUUID POWERPAL_BATTERY_SERVICE_UUID = espbt::ESPBTUUID::from_uint16(0x180F);
 static const espbt::ESPBTUUID POWERPAL_BATTERY_CHARACTERISTIC_UUID = espbt::ESPBTUUID::from_uint16(0x2A19);
+
+static const espbt::ESPBTUUID DEVICE_INFO_SERVICE_UUID = espbt::ESPBTUUID::from_uint16(0x180A);
+static const espbt::ESPBTUUID FIRMWARE_REVISION_CHARACTERISTIC_UUID = espbt::ESPBTUUID::from_uint16(0x2A26);
 
 static const uint8_t seconds_in_minute = 60;
 static const float kw_to_w_conversion = 1000.0;
@@ -69,6 +90,9 @@ class Powerpal : public esphome::ble_client::BLEClientNode, public Component {
   void parse_apikey_(const uint8_t *data, uint16_t length);
   std::string serial_to_apikey_(const uint8_t *data, uint16_t length);
   void send_pairing_code_();
+  // Discover GATT handles by UUID lookup after service discovery completes.
+  // Returns false if any required characteristic is missing.
+  bool discover_handles_();
 
   // Set true once the pairing-code write has been issued (from either GAP AUTH_CMPL or
   // GATTC SEARCH_CMPL — whichever fires first). Prevents duplicate writes when both fire.
@@ -92,18 +116,44 @@ class Powerpal : public esphome::ble_client::BLEClientNode, public Component {
   uint64_t daily_pulses_{0};
   uint64_t total_pulses_{0};
 
-  uint16_t pairing_code_char_handle_ = 0x2e;
-  uint16_t reading_batch_size_char_handle_ = 0x33;
-  uint16_t measurement_char_handle_ = 0x14;
+  // GATT handles, populated by discover_handles_() after service discovery.
+  // Zero means "not yet discovered or not present on this device".
+  uint16_t pairing_code_char_handle_{0};
+  uint16_t reading_batch_size_char_handle_{0};
+  uint16_t measurement_char_handle_{0};
+  uint16_t measurement_access_char_handle_{0};
+  uint16_t first_rec_char_handle_{0};
+  uint16_t time_char_handle_{0};
 
-  uint16_t battery_char_handle_ = 0x10;
-  uint16_t led_sensitivity_char_handle_ = 0x25;
-  uint16_t firmware_char_handle_ = 0x3b;
+  uint16_t battery_char_handle_{0};
+  uint16_t led_sensitivity_char_handle_{0};
+  uint16_t firmware_char_handle_{0};
   // Char handle for the apikey/UUID characteristic (`59DA0009-...`). Read once
   // post-pair and logged when log_api_key_ is true. Diagnostic-only.
-  uint16_t apikey_char_handle_ = 0x28;
+  uint16_t apikey_char_handle_{0};
 
   bool log_api_key_{false};
+
+  // Track the most recent measurement timestamp we've received from the device.
+  // Used to compute the start of the next measurement-range request so we don't
+  // re-stream readings we've already published.
+  uint32_t last_received_ts_{0};
+  // The end timestamp of the currently-active measurement range request. When
+  // a measurement arrives with this timestamp, the stream is finished and we
+  // schedule the next poll.
+  uint32_t requested_end_ts_{0};
+  // True between requesting a measurement range and the stream ending. Used to
+  // avoid issuing overlapping requests.
+  bool measurement_request_in_flight_{false};
+
+  // Issue a read of first_rec to learn the device's current [first_ts, last_ts]
+  // and chain into write_measurement_access_().
+  void poll_for_new_measurements_();
+  // Write [start_ts, end_ts] (8 bytes LE) to measurement_access to start a stream.
+  void write_measurement_access_(uint32_t start_ts, uint32_t end_ts);
+  // Write the current Unix time to the device's time characteristic. The Powerpal
+  // returns zeros from first_rec until its clock has been set.
+  void write_device_time_();
 };
 
 }  // namespace powerpal_ble
