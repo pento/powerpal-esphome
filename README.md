@@ -67,13 +67,13 @@ sensor:
     pulses_per_kwh: 1000 # confirm against Powerpal app setup
     time_id: homeassistant_time
     power:
-      name: "Powerpal Power"
+      name: "Power"
     daily_energy:
-      name: "Powerpal Daily Energy"
+      name: "Daily Energy"
     energy:
-      name: "Powerpal Total Energy"
+      name: "Total Energy"
     battery_level:
-      name: "Powerpal Battery"
+      name: "Battery"
 ```
 
 ## Finding the MAC
