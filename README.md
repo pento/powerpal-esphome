@@ -1,8 +1,8 @@
 # powerpal-esphome
 
 ESPHome external component for the [Powerpal](https://www.powerpal.net/)
-BLE energy monitor. Reads power, energy and battery directly over BLE
-— no phone app, no Powerpal cloud.
+BLE energy monitor. Reads power, energy and battery directly over BLE:
+no phone app, no Powerpal cloud.
 
 ## Origin
 
@@ -16,13 +16,11 @@ without forking.
 
 Differences from the upstream fork:
 
-- Modern external_components layout — no ESPHome fork required.
+- Modern external_components layout: no ESPHome fork required.
 - ESP-IDF framework (the original Arduino-framework path is the
   source of the upstream's bit-rot).
-- Cloud-upload path removed (`USE_HTTP_REQUEST`, device-id /
-  apikey readback, JSON POST to `readings.powerpal.net`). HA is the
-  destination; round-tripping through Powerpal's cloud is not
-  wanted.
+- Cloud-upload path removed. This is intended as a local-only component,
+  there's no need to share your energy use data with others.
 - Defensive fallback: the pairing-code write fires from
   `ESP_GATTC_SEARCH_CMPL_EVT` _as well as_ `ESP_GAP_BLE_AUTH_CMPL_EVT`,
   with a single-write gate. The Powerpal does not require BLE-level
@@ -33,8 +31,8 @@ Differences from the upstream fork:
 ## Hardware
 
 Any ESP32. Tested on M5Stack AtomS3 Lite (ESP32-S3FN8). Place within
-BLE range of the Powerpal — a few metres through one or two interior
-walls.
+BLE range of the Powerpal: a few metres through one or two interior
+walls is fine.
 
 ## Usage
 
@@ -85,7 +83,8 @@ the corresponding rows via `recorder/import_statistics`.
 
 ## Finding the MAC
 
-The MAC isn't printed on the Powerpal hardware. Three options:
+The MAC sometimes isn't printed on the Powerpal hardware. If this is the
+case, there are two ways to find it:
 
 - **Android**: nRF Connect → scan → look for `powerpal NNNNNNNN`. MAC
   is shown directly under the name (Android exposes real BLE MACs;
@@ -93,15 +92,12 @@ The MAC isn't printed on the Powerpal hardware. Three options:
 - **The ESP32 itself**: flash this component with a placeholder MAC.
   On boot, `esp32_ble_tracker:` logs every advertisement it sees,
   including the Powerpal's MAC. Update the YAML and re-flash.
-- **Powerpal currently connected to the phone won't appear in scans**
-  (single-pair behaviour). Force-quit the Powerpal app first, wait
-  ~30 seconds, then scan.
 
 ## Pairing
 
 The Powerpal supports a single BLE pairing at a time. Unpair it from
 your phone first (Bluetooth settings → forget device). Note the
-6-digit pairing code somewhere persistent before doing so — losing
+6-digit pairing code somewhere persistent before doing so, since losing
 it means a factory reset.
 
 After the ESP32 boots, look for the `[powerpal_ble]` log lines:
