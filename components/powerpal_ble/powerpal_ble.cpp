@@ -538,6 +538,11 @@ void Powerpal::gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gat
         break;
       }
 
+      if (param->write.handle == this->time_char_handle_) {
+        ESP_LOGD(TAG, "device time write confirmed");
+        break;
+      }
+
       ESP_LOGW(TAG, "[%s] Missed all handle matches: %d",
                this->parent_->address_str(), param->write.handle);
       break;
