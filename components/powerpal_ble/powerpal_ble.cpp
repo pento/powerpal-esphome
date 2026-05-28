@@ -274,7 +274,10 @@ void Powerpal::subscribe_live_power_() {
   auto status = esp_ble_gattc_register_for_notify(this->parent_->get_gattc_if(), this->parent_->get_remote_bda(),
                                                   this->pulse_char_handle_);
   if (status) {
-    ESP_LOGW(TAG, "register_for_notify(pulse) failed, status=%d", status);
+    // Same fallback as the missing-handle path above: if we can't subscribe,
+    // resume the batched publish rather than leaving `power` silent.
+    ESP_LOGW(TAG, "register_for_notify(pulse) failed, status=%d; falling back to batched average", status);
+    this->live_power_enabled_ = false;
   }
 }
 
@@ -544,6 +547,13 @@ void Powerpal::gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gat
       if (param->reg_for_notify.status != ESP_GATT_OK) {
         ESP_LOGW(TAG, "register_for_notify failed for handle 0x%04x, status=%d",
                  param->reg_for_notify.handle, param->reg_for_notify.status);
+        // If the pulse subscription couldn't be established, disable live
+        // mode so parse_measurement_ resumes publishing the batched average
+        // rather than leaving `power` silent until the next reconnect.
+        if (param->reg_for_notify.handle == this->pulse_char_handle_) {
+          ESP_LOGW(TAG, "Falling back to batched average for `power`");
+          this->live_power_enabled_ = false;
+        }
         break;
       }
       ESP_LOGD(TAG, "register_for_notify succeeded for handle 0x%04x", param->reg_for_notify.handle);

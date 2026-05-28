@@ -40,6 +40,11 @@ def _validate(config):
             "Using daily_energy without a time_id means relying on your Powerpal's RTC for packet times, which is not recommended. "
             "Please consider adding a time component to your ESPHome yaml, and it's time_id to your powerpal_ble component."
         )
+    if config.get(CONF_LIVE_POWER) and CONF_POWER not in config:
+        raise cv.Invalid(
+            "live_power: true requires a `power:` sensor to publish to. "
+            "Either configure a power sensor or set live_power: false (the default)."
+        )
     return config
 
 
