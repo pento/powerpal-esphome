@@ -30,6 +30,13 @@ static const espbt::ESPBTUUID POWERPAL_CHARACTERISTIC_MEASUREMENT_UUID =
 // Without this write, no measurement notifications are sent.
 static const espbt::ESPBTUUID POWERPAL_CHARACTERISTIC_MEASUREMENT_ACCESS_UUID =
     espbt::ESPBTUUID::from_raw("59DA0002-12F4-25A6-7D4F-55961DCE4205");
+// Pulse notifications. Delivery is on a device-controlled ~390 ms-quantised
+// grid that does NOT correspond 1:1 with actual meter pulses. The 4-byte LE
+// uint32 payload IS the device's current inter-pulse interval in milliseconds;
+// instantaneous power is `3.6e9 / (pulses_per_kwh * payload_ms)`. Independent
+// of the batched-measurement stream.
+static const espbt::ESPBTUUID POWERPAL_CHARACTERISTIC_PULSE_UUID =
+    espbt::ESPBTUUID::from_raw("59DA0003-12F4-25A6-7D4F-55961DCE4205");
 // Read/write the device's wall-clock (Unix epoch seconds, LE uint32, 4 bytes).
 // The Powerpal needs this set after power-loss or it returns zeros from first_rec
 // and tags new measurements with bogus timestamps.
@@ -81,8 +88,19 @@ class Powerpal : public esphome::ble_client::BLEClientNode, public Component {
   }
   void set_notification_interval(uint8_t reading_batch_size) { reading_batch_size_[0] = reading_batch_size; }
   void set_log_api_key(bool log_api_key) { log_api_key_ = log_api_key; }
+  // When true, subscribe to the pulse characteristic and drive `power` from
+  // the device's live inter-pulse interval. When false, the batched stream's
+  // interval-average (notification_interval minutes) drives `power` — the
+  // pre-live-power behavior.
+  void set_live_power(bool enabled) { live_power_enabled_ = enabled; }
 
  protected:
+  // Decode a 4-byte little-endian uint32 from the start of `data`. Callers are
+  // responsible for verifying the buffer has at least 4 bytes available.
+  static uint32_t read_le_u32_(const uint8_t *data) {
+    return static_cast<uint32_t>(data[0]) | (static_cast<uint32_t>(data[1]) << 8) |
+           (static_cast<uint32_t>(data[2]) << 16) | (static_cast<uint32_t>(data[3]) << 24);
+  }
   std::string pkt_to_hex_(const uint8_t *data, uint16_t len);
   void decode_(const uint8_t *data, uint16_t length);
   void parse_battery_(const uint8_t *data, uint16_t length);
@@ -113,6 +131,9 @@ class Powerpal : public esphome::ble_client::BLEClientNode, public Component {
   uint8_t reading_batch_size_[4] = {0x01, 0x00, 0x00, 0x00};
   float pulses_per_kwh_;
   float pulse_multiplier_;
+  // Numerator for the live-power formula: 3.6e9 / pulses_per_kwh. Precomputed
+  // in setup() so each pulse notification only needs one division.
+  float live_watts_numerator_{0.0f};
   uint64_t daily_pulses_{0};
   uint64_t total_pulses_{0};
 
@@ -131,8 +152,12 @@ class Powerpal : public esphome::ble_client::BLEClientNode, public Component {
   // Char handle for the apikey/UUID characteristic (`59DA0009-...`). Read once
   // post-pair and logged when log_api_key_ is true. Diagnostic-only.
   uint16_t apikey_char_handle_{0};
+  // Optional pulse-characteristic handle for the live-power subscription.
+  // subscribe_live_power_() warns and falls back to batched mode if zero.
+  uint16_t pulse_char_handle_{0};
 
   bool log_api_key_{false};
+  bool live_power_enabled_{false};
 
   // Track the most recent measurement timestamp we've received from the device.
   // Used to compute the start of the next measurement-range request so we don't
@@ -154,6 +179,15 @@ class Powerpal : public esphome::ble_client::BLEClientNode, public Component {
   // Write the current Unix time to the device's time characteristic. The Powerpal
   // returns zeros from first_rec until its clock has been set.
   void write_device_time_();
+
+  // Engage the live-power subscription if enabled. Called once per connection
+  // after pairing has been confirmed. Clears live_power_enabled_ as a fallback
+  // if the optional pulse characteristic is absent.
+  void subscribe_live_power_();
+  // Publish path for subscribe mode. `interval_millis` is the device-reported
+  // inter-pulse interval from the pulse-characteristic payload. Power is
+  // computed directly with no smoothing; the device pre-averages.
+  void publish_live_watts_from_interval_(uint32_t interval_millis);
 };
 
 }  // namespace powerpal_ble
