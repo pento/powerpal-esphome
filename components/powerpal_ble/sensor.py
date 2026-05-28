@@ -31,6 +31,7 @@ CONF_NOTIFICATION_INTERVAL = "notification_interval"
 CONF_PULSES_PER_KWH = "pulses_per_kwh"
 CONF_DAILY_ENERGY = "daily_energy"
 CONF_LOG_API_KEY = "log_api_key"
+CONF_LIVE_POWER = "live_power"
 
 
 def _validate(config):
@@ -69,6 +70,10 @@ CONFIG_SCHEMA = cv.All(
             cv.Required(CONF_NOTIFICATION_INTERVAL): cv.int_range(min=1, max=60),
             cv.Required(CONF_PULSES_PER_KWH): cv.float_range(min=1),
             cv.Optional(CONF_LOG_API_KEY, default=False): cv.boolean,
+            # When true, subscribe to the pulse characteristic and drive `power`
+            # from the device's live inter-pulse interval. When false, `power`
+            # tracks the average from the batched measurement stream.
+            cv.Optional(CONF_LIVE_POWER, default=False): cv.boolean,
             cv.Optional(CONF_BATTERY_LEVEL): sensor.sensor_schema(
                 unit_of_measurement=UNIT_PERCENT,
                 device_class=DEVICE_CLASS_BATTERY,
@@ -110,6 +115,8 @@ async def to_code(config):
         cg.add(var.set_pulses_per_kwh(config[CONF_PULSES_PER_KWH]))
 
     cg.add(var.set_log_api_key(config[CONF_LOG_API_KEY]))
+
+    cg.add(var.set_live_power(config[CONF_LIVE_POWER]))
 
     if CONF_BATTERY_LEVEL in config:
         sens = await sensor.new_sensor(config[CONF_BATTERY_LEVEL])

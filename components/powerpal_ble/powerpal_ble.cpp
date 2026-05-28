@@ -21,7 +21,8 @@ void Powerpal::setup() {
   this->pairing_code_written_ = false;
   this->authenticated_ = false;
   this->pulse_multiplier_ = ((seconds_in_minute * this->reading_batch_size_[0]) / (this->pulses_per_kwh_ / kw_to_w_conversion));
-  ESP_LOGD(TAG, "pulse_multiplier_: %f", this->pulse_multiplier_);
+  this->live_watts_numerator_ = 3'600'000'000.0f / this->pulses_per_kwh_;
+  ESP_LOGD(TAG, "pulse_multiplier_: %f, live_watts_numerator_: %f", this->pulse_multiplier_, this->live_watts_numerator_);
 }
 
 std::string Powerpal::pkt_to_hex_(const uint8_t *data, uint16_t len) {
@@ -67,10 +68,7 @@ void Powerpal::parse_measurement_(const uint8_t *data, uint16_t length) {
     return;
   }
 
-  time_t unix_time = data[0];
-  unix_time += (data[1] << 8);
-  unix_time += (data[2] << 16);
-  unix_time += (data[3] << 24);
+  time_t unix_time = static_cast<time_t>(read_le_u32_(data));
 
   uint16_t pulses_within_interval = data[4];
   pulses_within_interval += data[5] << 8;
@@ -81,7 +79,10 @@ void Powerpal::parse_measurement_(const uint8_t *data, uint16_t length) {
            static_cast<unsigned>(unix_time), static_cast<unsigned>(pulses_within_interval),
            avg_watts_within_interval);
 
-  if (this->power_sensor_ != nullptr) {
+  // When the live-power subscription is engaged, it owns the `power` sensor
+  // and we suppress the batched interval-average publish here. Mixing the
+  // two would bias HA's time-weighted hourly mean at interval boundaries.
+  if (this->power_sensor_ != nullptr && !this->live_power_enabled_) {
     this->power_sensor_->publish_state(avg_watts_within_interval);
   }
 
@@ -155,6 +156,7 @@ bool Powerpal::discover_handles_() {
       {POWERPAL_SERVICE_UUID, POWERPAL_CHARACTERISTIC_LED_SENSITIVITY_UUID, "led_sensitivity",
        &this->led_sensitivity_char_handle_, false},
       {POWERPAL_SERVICE_UUID, POWERPAL_CHARACTERISTIC_APIKEY_UUID, "apikey", &this->apikey_char_handle_, false},
+      {POWERPAL_SERVICE_UUID, POWERPAL_CHARACTERISTIC_PULSE_UUID, "pulse", &this->pulse_char_handle_, false},
       {POWERPAL_BATTERY_SERVICE_UUID, POWERPAL_BATTERY_CHARACTERISTIC_UUID, "battery", &this->battery_char_handle_,
        false},
       {DEVICE_INFO_SERVICE_UUID, FIRMWARE_REVISION_CHARACTERISTIC_UUID, "firmware", &this->firmware_char_handle_,
@@ -254,6 +256,38 @@ void Powerpal::write_measurement_access_(uint32_t start_ts, uint32_t end_ts) {
     this->measurement_request_in_flight_ = false;
     this->requested_end_ts_ = 0;
   }
+}
+
+void Powerpal::subscribe_live_power_() {
+  if (!this->live_power_enabled_) {
+    return;
+  }
+  if (this->pulse_char_handle_ == 0) {
+    // Older firmware doesn't expose the pulse char. Disable live mode so the
+    // batched stream's interval-average publish resumes as a fallback rather
+    // than leaving `power` permanently silent.
+    ESP_LOGW(TAG, "Live power requested but pulse characteristic not discovered; falling back to batched average");
+    this->live_power_enabled_ = false;
+    return;
+  }
+  ESP_LOGI(TAG, "Subscribing to pulse notifications for live power");
+  auto status = esp_ble_gattc_register_for_notify(this->parent_->get_gattc_if(), this->parent_->get_remote_bda(),
+                                                  this->pulse_char_handle_);
+  if (status) {
+    ESP_LOGW(TAG, "register_for_notify(pulse) failed, status=%d", status);
+  }
+}
+
+void Powerpal::publish_live_watts_from_interval_(uint32_t interval_millis) {
+  if (this->power_sensor_ == nullptr || interval_millis == 0) {
+    return;
+  }
+  // `interval_millis` is the device's current inter-pulse interval from the
+  // pulse-characteristic payload, in ms. Power = energy / time:
+  //   watts = 3.6e9 / (ppk * interval_ms) = live_watts_numerator_ / interval_ms.
+  float watts = this->live_watts_numerator_ / static_cast<float>(interval_millis);
+  ESP_LOGD(TAG, "Live watts: %.2f (interval=%u ms)", watts, interval_millis);
+  this->power_sensor_->publish_state(watts);
 }
 
 void Powerpal::send_pairing_code_() {
@@ -363,10 +397,8 @@ void Powerpal::gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gat
                             [this]() { this->poll_for_new_measurements_(); });
           break;
         }
-        uint32_t first_ts = (uint32_t) param->read.value[0] | ((uint32_t) param->read.value[1] << 8) |
-                            ((uint32_t) param->read.value[2] << 16) | ((uint32_t) param->read.value[3] << 24);
-        uint32_t last_ts = (uint32_t) param->read.value[4] | ((uint32_t) param->read.value[5] << 8) |
-                           ((uint32_t) param->read.value[6] << 16) | ((uint32_t) param->read.value[7] << 24);
+        uint32_t first_ts = read_le_u32_(&param->read.value[0]);
+        uint32_t last_ts = read_le_u32_(&param->read.value[4]);
         ESP_LOGI(TAG, "Device buffer: first_ts=%u, last_ts=%u", first_ts, last_ts);
 
         if (first_ts == 0 || last_ts == 0) {
@@ -482,6 +514,9 @@ void Powerpal::gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gat
           }
         }
 
+        // Engage the live-power subscription if enabled.
+        this->subscribe_live_power_();
+
         break;
       }
       if (param->write.handle == this->reading_batch_size_char_handle_) {
@@ -533,6 +568,25 @@ void Powerpal::gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gat
       if (param->notify.handle == this->measurement_char_handle_) {
         ESP_LOGD(TAG, "Received measurement notify event");
         this->parse_measurement_(param->notify.value, param->notify.value_len);
+        break;
+      }
+
+      // pulse — the 4-byte LE u32 payload is the device's current inter-pulse
+      // interval in milliseconds (verified empirically: at steady ~475 W the
+      // value sits at ~2370 ms; at ~5.6 kW it drops to ~200 ms; the implied
+      // power matches the batched 60 s average across the range). The BLE
+      // delivery cadence is separate (multiples of ~390 ms) and doesn't
+      // correspond to actual pulse arrivals, so we ignore it and trust the
+      // payload directly.
+      if (param->notify.handle == this->pulse_char_handle_) {
+        if (param->notify.value_len < 4) {
+          ESP_LOGW(TAG, "Pulse notify too short (%d bytes): 0x%s", param->notify.value_len,
+                   this->pkt_to_hex_(param->notify.value, param->notify.value_len).c_str());
+          break;
+        }
+        uint32_t interval_ms = read_le_u32_(param->notify.value);
+        ESP_LOGD(TAG, "Pulse notify interval_ms=%u", interval_ms);
+        this->publish_live_watts_from_interval_(interval_ms);
         break;
       }
       break;

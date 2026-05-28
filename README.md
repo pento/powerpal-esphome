@@ -74,6 +74,46 @@ sensor:
       name: "Battery"
 ```
 
+## Live power updates
+
+By default, the `power` sensor publishes an average over the previous
+`notification_interval` minutes from the batched measurement stream, once
+per interval. Set `live_power: true` on the sensor platform to subscribe
+to the device's pulse characteristic and drive `power` from the live
+inter-pulse interval instead — updates every ~1.5–3.5 s, no smoothing
+needed (the device pre-averages). `energy` and `daily_energy` are
+unaffected either way.
+
+```yaml
+sensor:
+  - platform: powerpal_ble
+    # ...
+    live_power: true
+```
+
+The subscription keeps a BLE notification stream open continuously, which
+is more radio activity than the once-per-minute batched poll. Expect some
+additional Powerpal battery drain — exactly how much hasn't been measured
+yet. Leave `live_power: false` (the default) if you don't need sub-minute
+updates.
+
+Individual values have some natural variance even with the device's
+smoothing — layer ESPHome filters on the `power` sensor if you want more:
+
+```yaml
+power:
+  name: "Power"
+  filters:
+    - median:
+        window_size: 5
+        send_every: 1
+```
+
+At low loads (roughly under 30 W on a 1000 pulses/kWh meter, or under 10 W
+on a 3200 pulses/kWh meter), the live value is whatever the most recent
+pulse implied — it will look "stale" until the next pulse arrives. This is
+a property of pulse meters, not the protocol.
+
 ## Historical data
 
 Use [`scripts/import_history.py`](scripts/import_history.py) to seed
