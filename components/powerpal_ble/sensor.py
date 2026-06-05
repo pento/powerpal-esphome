@@ -48,7 +48,7 @@ def _validate(config):
     elif config[CONF_LIVE_POWER] and CONF_POWER not in config:
         raise cv.Invalid(
             "live_power: true requires a `power:` sensor to publish to. "
-            "Configure a power sensor, or remove live_power: true."
+            "Either configure a power sensor, or set live_power: false (or remove it)."
         )
     return config
 

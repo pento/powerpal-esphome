@@ -12,9 +12,10 @@ import pathlib
 import pytest
 import esphome.config_validation as cv
 
-_SPEC = importlib.util.spec_from_file_location(
-    "powerpal_ble_sensor", pathlib.Path(__file__).with_name("sensor.py")
-)
+_SENSOR_PY = pathlib.Path(__file__).with_name("sensor.py")
+_SPEC = importlib.util.spec_from_file_location("powerpal_ble_sensor", _SENSOR_PY)
+if _SPEC is None or _SPEC.loader is None:
+    raise RuntimeError(f"could not load component module from {_SENSOR_PY}")
 sensor = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(sensor)
 
@@ -47,5 +48,8 @@ def test_live_power_default(config, expected):
 
 
 def test_explicit_live_power_without_power_sensor_is_invalid():
-    with pytest.raises(cv.Invalid, match="requires a `power:` sensor"):
+    with pytest.raises(cv.Invalid, match="requires a `power:` sensor") as exc_info:
         sensor._validate({CONF_LIVE_POWER: True})
+    # The message should offer both fixes: add a power sensor, or disable
+    # live_power (the most direct fix when the user doesn't need live updates).
+    assert "live_power: false" in str(exc_info.value)
