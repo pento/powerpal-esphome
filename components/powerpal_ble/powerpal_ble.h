@@ -157,6 +157,9 @@ class Powerpal : public esphome::ble_client::BLEClientNode, public Component {
   uint16_t pulse_char_handle_{0};
 
   bool log_api_key_{false};
+  // Always set from the YAML config via set_live_power() (see sensor.py), where
+  // the effective default is true when a `power` sensor is configured. The
+  // {false} here is only the fail-closed state before that setter runs.
   bool live_power_enabled_{false};
 
   // Track the most recent measurement timestamp we've received from the device.

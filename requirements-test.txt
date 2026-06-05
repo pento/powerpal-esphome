@@ -1,0 +1,6 @@
+# Dependencies for running the component's unit tests:
+#   python3 -m venv .venv && source .venv/bin/activate
+#   pip install -r requirements-test.txt
+#   pytest
+esphome>=2026.5.0
+pytest>=8

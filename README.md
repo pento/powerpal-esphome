@@ -76,26 +76,28 @@ sensor:
 
 ## Live power updates
 
-By default, the `power` sensor publishes an average over the previous
-`notification_interval` minutes from the batched measurement stream, once
-per interval. Set `live_power: true` on the sensor platform to subscribe
-to the device's pulse characteristic and drive `power` from the live
-inter-pulse interval instead — updates every ~1.5–3.5 s, no smoothing
-needed (the device pre-averages). `energy` and `daily_energy` are
+When a `power` sensor is configured, it publishes live updates by default:
+the component subscribes to the device's pulse characteristic and drives
+`power` from the live inter-pulse interval — updates every ~1.5–3.5 s, no
+smoothing needed (the device pre-averages). Set `live_power: false` to instead
+publish an average over the previous `notification_interval` minutes from the
+batched measurement stream, once per interval. `energy` and `daily_energy` are
 unaffected either way.
 
 ```yaml
 sensor:
   - platform: powerpal_ble
     # ...
-    live_power: true
+    live_power: false # opt out; publish the batched per-interval average
 ```
 
-The subscription keeps a BLE notification stream open continuously, which
+The live subscription keeps a BLE notification stream open continuously, which
 is more radio activity than the once-per-minute batched poll. Expect some
-additional Powerpal battery drain — exactly how much hasn't been measured
-yet. Leave `live_power: false` (the default) if you don't need sub-minute
-updates.
+additional Powerpal battery drain, in the order of less than 0.5% per week.
+Since live updates are on by default whenever a `power` sensor is present,
+set `live_power: false` if you'd rather minimise radio activity. (With no
+`power` sensor configured, leaving `live_power` unset is a no-op — and
+`live_power: true` is rejected, since there's nothing to publish to.)
 
 Individual values have some natural variance even with the device's
 smoothing — layer ESPHome filters on the `power` sensor if you want more:
@@ -163,6 +165,18 @@ version doesn't expose "Generate an API Key" under Guidance. Toggle
 on, OTA, capture from logs, toggle back off, OTA again. The key
 identifies your account to Powerpal's servers and is otherwise the
 same value on every read.
+
+## Development
+
+Config validation is covered by unit tests. Install the test dependencies
+(see [`requirements-test.txt`](requirements-test.txt)) into a virtualenv and
+run `pytest` from the repo root:
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements-test.txt
+pytest
+```
 
 ## License
 

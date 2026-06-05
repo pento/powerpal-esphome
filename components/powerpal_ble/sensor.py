@@ -40,10 +40,15 @@ def _validate(config):
             "Using daily_energy without a time_id means relying on your Powerpal's RTC for packet times, which is not recommended. "
             "Please consider adding a time component to your ESPHome yaml, and it's time_id to your powerpal_ble component."
         )
-    if config.get(CONF_LIVE_POWER) and CONF_POWER not in config:
+    if CONF_LIVE_POWER not in config:
+        # No explicit setting: default on when a power sensor is present to
+        # receive live updates, off otherwise. (An explicit live_power: true
+        # with no power sensor is rejected below.)
+        config[CONF_LIVE_POWER] = CONF_POWER in config
+    elif config[CONF_LIVE_POWER] and CONF_POWER not in config:
         raise cv.Invalid(
             "live_power: true requires a `power:` sensor to publish to. "
-            "Either configure a power sensor or set live_power: false (the default)."
+            "Either configure a power sensor, or set live_power: false (or remove it)."
         )
     return config
 
@@ -77,8 +82,10 @@ CONFIG_SCHEMA = cv.All(
             cv.Optional(CONF_LOG_API_KEY, default=False): cv.boolean,
             # When true, subscribe to the pulse characteristic and drive `power`
             # from the device's live inter-pulse interval. When false, `power`
-            # tracks the average from the batched measurement stream.
-            cv.Optional(CONF_LIVE_POWER, default=False): cv.boolean,
+            # tracks the average from the batched measurement stream. Defaults to
+            # true when a `power` sensor is configured, false otherwise; resolved
+            # in _validate so the default can depend on the rest of the config.
+            cv.Optional(CONF_LIVE_POWER): cv.boolean,
             cv.Optional(CONF_BATTERY_LEVEL): sensor.sensor_schema(
                 unit_of_measurement=UNIT_PERCENT,
                 device_class=DEVICE_CLASS_BATTERY,
