@@ -91,6 +91,7 @@ CONFIG_SCHEMA = cv.All(
                 device_class=DEVICE_CLASS_BATTERY,
                 accuracy_decimals=0,
                 entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+                state_class=STATE_CLASS_MEASUREMENT,
             ),
         }
     )
