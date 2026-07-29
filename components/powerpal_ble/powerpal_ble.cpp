@@ -2,6 +2,8 @@
 #include "esphome/core/log.h"
 #include "esphome/core/hal.h"
 
+#include <cinttypes>
+
 #ifdef USE_ESP32
 
 namespace esphome {
@@ -75,9 +77,8 @@ void Powerpal::parse_measurement_(const uint8_t *data, uint16_t length) {
 
   float avg_watts_within_interval = pulses_within_interval * this->pulse_multiplier_;
 
-  ESP_LOGI(TAG, "Timestamp: %u, Pulses: %u, Average Watts within interval: %.3f W",
-           static_cast<unsigned>(unix_time), static_cast<unsigned>(pulses_within_interval),
-           avg_watts_within_interval);
+  ESP_LOGI(TAG, "Timestamp: %" PRIu32 ", Pulses: %u, Average Watts within interval: %.3f W",
+           static_cast<uint32_t>(unix_time), pulses_within_interval, avg_watts_within_interval);
 
   // When the live-power subscription is engaged, it owns the `power` sensor
   // and we suppress the batched interval-average publish here. Mixing the
@@ -123,7 +124,7 @@ void Powerpal::parse_measurement_(const uint8_t *data, uint16_t length) {
   this->last_received_ts_ = static_cast<uint32_t>(unix_time);
 
   if (this->requested_end_ts_ != 0 && this->last_received_ts_ >= this->requested_end_ts_) {
-    ESP_LOGD(TAG, "Reached end of requested range (ts=%u >= end=%u); scheduling next poll",
+    ESP_LOGD(TAG, "Reached end of requested range (ts=%" PRIu32 " >= end=%" PRIu32 "); scheduling next poll",
              this->last_received_ts_, this->requested_end_ts_);
     this->measurement_request_in_flight_ = false;
     this->requested_end_ts_ = 0;
@@ -200,7 +201,7 @@ void Powerpal::write_device_time_() {
   uint32_t unix_ts = static_cast<uint32_t>(now.timestamp);
   uint8_t payload[4] = {static_cast<uint8_t>(unix_ts & 0xFF), static_cast<uint8_t>((unix_ts >> 8) & 0xFF),
                         static_cast<uint8_t>((unix_ts >> 16) & 0xFF), static_cast<uint8_t>((unix_ts >> 24) & 0xFF)};
-  ESP_LOGI(TAG, "Setting Powerpal time to %u", unix_ts);
+  ESP_LOGI(TAG, "Setting Powerpal time to %" PRIu32, unix_ts);
   auto status = esp_ble_gattc_write_char(this->parent()->get_gattc_if(), this->parent()->get_conn_id(),
                                          this->time_char_handle_, sizeof(payload), payload, ESP_GATT_WRITE_TYPE_RSP,
                                          ESP_GATT_AUTH_REQ_NONE);
@@ -247,7 +248,7 @@ void Powerpal::write_measurement_access_(uint32_t start_ts, uint32_t end_ts) {
   payload[6] = (end_ts >> 16) & 0xFF;
   payload[7] = (end_ts >> 24) & 0xFF;
   this->requested_end_ts_ = end_ts;
-  ESP_LOGI(TAG, "Requesting measurement stream [%u, %u]", start_ts, end_ts);
+  ESP_LOGI(TAG, "Requesting measurement stream [%" PRIu32 ", %" PRIu32 "]", start_ts, end_ts);
   auto status = esp_ble_gattc_write_char(this->parent()->get_gattc_if(), this->parent()->get_conn_id(),
                                          this->measurement_access_char_handle_, sizeof(payload), payload,
                                          ESP_GATT_WRITE_TYPE_RSP, ESP_GATT_AUTH_REQ_NONE);
@@ -289,7 +290,7 @@ void Powerpal::publish_live_watts_from_interval_(uint32_t interval_millis) {
   // pulse-characteristic payload, in ms. Power = energy / time:
   //   watts = 3.6e9 / (ppk * interval_ms) = live_watts_numerator_ / interval_ms.
   float watts = this->live_watts_numerator_ / static_cast<float>(interval_millis);
-  ESP_LOGD(TAG, "Live watts: %.2f (interval=%u ms)", watts, interval_millis);
+  ESP_LOGD(TAG, "Live watts: %.2f (interval=%" PRIu32 " ms)", watts, interval_millis);
   this->power_sensor_->publish_state(watts);
 }
 
@@ -402,7 +403,7 @@ void Powerpal::gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gat
         }
         uint32_t first_ts = read_le_u32_(&param->read.value[0]);
         uint32_t last_ts = read_le_u32_(&param->read.value[4]);
-        ESP_LOGI(TAG, "Device buffer: first_ts=%u, last_ts=%u", first_ts, last_ts);
+        ESP_LOGI(TAG, "Device buffer: first_ts=%" PRIu32 ", last_ts=%" PRIu32, first_ts, last_ts);
 
         if (first_ts == 0 || last_ts == 0) {
           ESP_LOGD(TAG, "Device buffer is empty; will retry");
@@ -426,7 +427,7 @@ void Powerpal::gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gat
         }
 
         if (start_ts > last_ts) {
-          ESP_LOGD(TAG, "No new measurements (start=%u > last=%u); will retry", start_ts, last_ts);
+          ESP_LOGD(TAG, "No new measurements (start=%" PRIu32 " > last=%" PRIu32 "); will retry", start_ts, last_ts);
           this->measurement_request_in_flight_ = false;
           this->set_timeout("powerpal_poll", this->reading_batch_size_[0] * 60u * 1000u,
                             [this]() { this->poll_for_new_measurements_(); });
@@ -600,7 +601,7 @@ void Powerpal::gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gat
           break;
         }
         uint32_t interval_ms = read_le_u32_(param->notify.value);
-        ESP_LOGD(TAG, "Pulse notify interval_ms=%u", interval_ms);
+        ESP_LOGD(TAG, "Pulse notify interval_ms=%" PRIu32, interval_ms);
         this->publish_live_watts_from_interval_(interval_ms);
         break;
       }
